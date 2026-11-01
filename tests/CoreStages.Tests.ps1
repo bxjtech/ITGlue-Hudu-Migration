@@ -87,9 +87,52 @@ Test 'lost state: assets re-link via the ITGlue ID field and stay managed' { par
     Assert-Equal 5 $global:Fake.Assets.Count
 }
 
-Test 'an older layout without some fields still syncs the fields it has' { param($dir)
+Test 'an existing layout missing fields stops the stage before anything is written' { param($dir)
     New-CoreFixture
     $cfg = New-FakeConfig $dir
+    Add-FakeLayout -Name 'People' -Labels @('Title', 'Notes') | Out-Null
+    $r = Invoke-StageRun $cfg @('companies', 'contacts') 'initial'
+    Assert-True (-not $r.Success) 'run reports the failure'
+    Assert-Equal 'failed' ($r.Summary | Where-Object stage -eq 'contacts').status
+    Assert-True (($r.Summary | Where-Object stage -eq 'contacts').message -like "*without these fields*'First Name'*MissingFields*") 'explains the fix'
+    Assert-Equal 0 $global:Fake.Assets.Count
+}
+
+Test 'MissingFields=add extends the existing layout, keeps its fields, and fills previously thin records' { param($dir)
+    New-CoreFixture
+    $cfg = New-FakeConfig $dir
+    $people = Add-FakeLayout -Name 'People' -Labels @('Title', 'Notes')
+    $titleField = $people.fields | Where-Object label -eq 'Title'
+    $titleField.id = 7001
+    $cfg.Layouts.MissingFields = 'ignore'
+    Invoke-StageRun $cfg @('core') 'initial' | Out-Null
+    $wile = $global:Fake.Assets | Where-Object name -eq 'Wile Coyote'
+    Assert-True (-not (Get-FakeAssetField $wile 'Emails')) 'thin record to start with'
+
+    $cfg.Layouts.MissingFields = 'add'
+    $dry = Invoke-StageRun $cfg @('contacts') 'incremental' -DryRun
+    Assert-Equal 1 @($dry.Results | Where-Object action -eq 'would-update-layout').Count
+    Assert-Equal 2 @($dry.Results | Where-Object action -eq 'would-update').Count
+    Assert-Equal 0 (Get-FakeWrites).Count
+
+    $r = Invoke-StageRun $cfg @('contacts') 'incremental'
+    Assert-True $r.Success 'run succeeds'
+    $people = $global:Fake.Layouts | Where-Object name -eq 'People'
+    Assert-True ($people.fields | Where-Object { $_.label -eq 'Title' -and $_.id -eq 7001 }) 'existing field kept with its id'
+    Assert-True ($people.fields | Where-Object label -eq 'Emails') 'missing field added'
+    Assert-True ($people.fields | Where-Object { $_.label -eq 'Location' -and $_.linkable_id }) 'location link added'
+    Assert-Equal 2 @($r.Results | Where-Object action -eq 'updated').Count 'every existing contact refreshed in place'
+    Assert-Equal 0 @(Get-FakeCalls POST '*/assets').Count 'nothing duplicated'
+    Assert-True ((Get-FakeAssetField $wile 'Emails') -like '*wile@acme.test*') 'emails now filled'
+    Assert-Equal '31' (Get-FakeAssetField $wile 'ITGlue ID')
+    Invoke-StageRun $cfg @('contacts') 'incremental' | Out-Null
+    Assert-Equal 0 (Get-FakeWrites).Count 'and settles afterwards'
+}
+
+Test 'MissingFields=ignore syncs the fields an older layout has' { param($dir)
+    New-CoreFixture
+    $cfg = New-FakeConfig $dir
+    $cfg.Layouts.MissingFields = 'ignore'
     Add-FakeLayout -Name 'People' -Labels @('First Name', 'Last Name', 'Title', 'Emails') | Out-Null
     $r = Invoke-StageRun $cfg @('companies', 'contacts') 'initial'
     Assert-True $r.Success 'no 422 from unknown fields'
@@ -104,6 +147,7 @@ Test 'pre-existing Hudu assets are matched by name, including the Primary Addres
     Invoke-StageRun $cfg @('companies') 'initial' | Out-Null
     $acme = $global:Fake.Companies | Where-Object name -eq 'Acme Corp'
     $layout = Add-FakeLayout -Name 'Locations' -Labels @('Address 1', 'City', 'ITGlue ID')
+    $cfg.Layouts.MissingFields = 'ignore'
     $psa = Add-FakeAsset -LayoutId $layout.id -CompanyId $acme.id -Name 'Primary Address' -Fields @{ City = 'from PSA' }
     $r = Invoke-StageRun $cfg @('locations') 'initial'
     Assert-Equal 'matched' ($r.Results | Where-Object itgId -eq '11').action
@@ -145,15 +189,20 @@ Test 'moved and deleted IT Glue records are flagged and left alone' { param($dir
     Assert-Equal 'deleted-in-itglue' ($r.Flags | Where-Object stage -eq 'contacts').type
 }
 
-Test 'contacts before locations: works, and the link appears once locations sync' { param($dir)
+Test 'contacts before locations: the missing Location link is caught, and add fills it in' { param($dir)
     New-CoreFixture
     $cfg = New-FakeConfig $dir
     Invoke-StageRun $cfg @('companies', 'contacts') 'initial' | Out-Null
     $people = $global:Fake.Layouts | Where-Object name -eq 'People'
     Assert-True (-not ($people.fields | Where-Object label -eq 'Location')) 'no Location field without a Locations layout'
     $r = Invoke-StageRun $cfg @('locations', 'contacts') 'incremental'
-    Assert-True $r.Success 'later runs succeed'
-    Assert-Equal 0 @(Get-FakeCalls PUT '*/assets/*').Count 'contacts unchanged because the layout has no Location field'
+    Assert-Equal 'failed' ($r.Summary | Where-Object stage -eq 'contacts').status
+    Assert-True (($r.Summary | Where-Object stage -eq 'contacts').message -like "*'Location'*") 'names the missing field'
+    $cfg.Layouts.MissingFields = 'add'
+    $r = Invoke-StageRun $cfg @('contacts') 'incremental'
+    Assert-True $r.Success 'succeeds once fields may be added'
+    $wile = $global:Fake.Assets | Where-Object name -eq 'Wile Coyote'
+    Assert-True ((Get-FakeAssetField $wile 'Location') -like '*Warehouse*') 'location link now set'
 }
 
 Test 'existing Hudu website for the same company is matched, not duplicated' { param($dir)
@@ -173,6 +222,7 @@ Test 'legacy contacts are adopted and baselined without being rewritten' { param
     Invoke-StageRun $cfg @('companies', 'locations') 'initial' | Out-Null
     $acme = $global:Fake.Companies | Where-Object name -eq 'Acme Corp'
     $people = Add-FakeLayout -Name 'People' -Labels @('First Name', 'Last Name', 'Title', 'Emails', 'ITGlue ID')
+    $cfg.Layouts.MissingFields = 'ignore'
     $old = Add-FakeAsset -LayoutId $people.id -CompanyId $acme.id -Name 'Wile Coyote' -Fields @{ 'First Name' = 'Wile'; 'Emails' = 'legacy format' }
     $logs = Join-Path $dir 'MigrationLogs'
     New-Item -ItemType Directory -Path $logs | Out-Null

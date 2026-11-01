@@ -44,6 +44,63 @@ function Confirm-SyncHuduLayout {
     return (Get-SyncHuduLayout $Context $Name -Refresh)
 }
 
+# An existing layout may lack fields this stage writes. Layouts.MissingFields decides:
+# stop (fail before writing), add (append them, keeping every existing field), ignore (sync the rest).
+function Resolve-SyncLayoutFields {
+    param(
+        [Parameter(Mandatory)]$Context,
+        [Parameter(Mandatory)][string]$Entity,
+        $Layout,
+        [Parameter(Mandatory)][string]$LayoutName,
+        [Parameter(Mandatory)][object[]]$LayoutFields
+    )
+    $wanted = @($LayoutFields | ForEach-Object { [string]$_.label })
+    if (-not $Layout) { return [System.Collections.Generic.HashSet[string]]::new([string[]]$wanted, [System.StringComparer]::OrdinalIgnoreCase) }
+
+    $existing = @($Layout.fields | Where-Object { $_ })
+    $have = [System.Collections.Generic.HashSet[string]]::new([string[]]@($existing | ForEach-Object { [string]$_.label }), [System.StringComparer]::OrdinalIgnoreCase)
+    $missing = @($LayoutFields | Where-Object { -not $have.Contains($_.label) })
+    if ($missing.Count -eq 0) { return $have }
+
+    $missingText = ($missing.label | ForEach-Object { "'$_'" }) -join ', '
+    switch ($Context.Config.Layouts.MissingFields) {
+        'ignore' {
+            Write-SyncLog -Level WARN -Message "[$Entity] Hudu layout '$LayoutName' has no $missingText field(s); those values are not synced (Layouts.MissingFields=ignore)."
+            return $have
+        }
+        'add' {
+            if ($Context.DryRun) {
+                Add-SyncResult $Context 'would-update-layout' $null $LayoutName $Layout.id "would add $missingText"
+            } else {
+                $keep = foreach ($f in $existing) {
+                    $h = [ordered]@{}
+                    foreach ($p in $f.PSObject.Properties) { $h[$p.Name] = $p.Value }
+                    $h
+                }
+                $next = [int](@($existing | ForEach-Object { [int]$_.position }) + 0 | Measure-Object -Maximum).Maximum
+                $added = foreach ($f in $missing) {
+                    $next++
+                    $n = [ordered]@{}
+                    foreach ($k in $f.Keys) { $n[$k] = $f[$k] }
+                    $n.position = $next
+                    $n
+                }
+                $body = @{ asset_layout = @{ fields = @($keep) + @($added) } }
+                $null = Invoke-SyncHuduWrite $Context 'PUT' "/api/v1/asset_layouts/$($Layout.id)" $body
+                $null = Get-SyncHuduLayout $Context $LayoutName -Refresh
+                Add-SyncResult $Context 'updated-layout' $null $LayoutName $Layout.id "added $missingText"
+            }
+            foreach ($f in $missing) { [void]$have.Add($f.label) }
+            return $have
+        }
+        default {
+            throw ("Hudu layout '$LayoutName' already exists without these fields: $missingText. Nothing was written for this stage. " +
+                "Set Layouts.MissingFields to 'add' to add them to the existing layout (its current fields are kept), " +
+                "'ignore' to sync only the fields it has, or point Layouts.$(if ($Entity -eq 'contacts') {'Contacts'} else {'Locations'}) at a different layout name.")
+        }
+    }
+}
+
 function Get-SyncHuduAssets {
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)]$LayoutId)
     $key = "hudu:assets:$LayoutId"
@@ -92,13 +149,8 @@ function Invoke-SyncAssetStage {
     $idLabel = 'ITGlue ID'
 
     $layout = Confirm-SyncHuduLayout -Context $Context -Name $LayoutName -Icon $Icon -Fields $LayoutFields
-    $allowed = if ($layout) { @($layout.fields | ForEach-Object { [string]$_.label }) } else { @($LayoutFields | ForEach-Object { $_.label }) }
-    $allowedSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$allowed, [System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($f in $LayoutFields) {
-        if (-not $allowedSet.Contains($f.label)) {
-            Write-SyncLog -Level WARN -Message "[$Entity] Hudu layout '$LayoutName' has no '$($f.label)' field; that value will not be synced."
-        }
-    }
+    $allowedSet = Resolve-SyncLayoutFields -Context $Context -Entity $Entity -Layout $layout -LayoutName $LayoutName -LayoutFields $LayoutFields
+    if ($layout) { $layout = Get-SyncHuduLayout $Context $LayoutName }
 
     $assets = if ($layout) { @(Get-SyncHuduAssets $Context $layout.id) } else { @() }
     $byId = @{}

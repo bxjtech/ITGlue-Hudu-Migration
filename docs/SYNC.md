@@ -212,6 +212,7 @@ Secrets come from environment variables (`.env` with Docker). Non-secret options
 | `Layouts.Locations` / `Layouts.Contacts` | `Locations` / `People` | Asset layout names; an existing layout with that name is reused, never modified |
 | `Layouts.Color` / `Layouts.IconColor` | `#6136ff` / `#ffffff` | Colors for layouts the sync creates |
 | `Layouts.PrimaryLocationAliases` | `["Primary Address"]` | Existing Hudu location names an IT Glue primary location may match |
+| `Layouts.MissingFields` | `stop` | When an existing layout lacks fields the sync writes: `stop` fails the stage before writing, `add` appends the missing fields (existing fields are kept), `ignore` syncs only the fields it has |
 | `Websites.DisableMonitoring` | `true` | Create websites with monitoring, DNS, SSL and WHOIS checks paused (change them in Hudu later) |
 
 ### Parent companies
@@ -236,8 +237,11 @@ children in the same run, so this also works on a first sync.
 | contacts | Asset in the **People** layout: names, title, type, important, notes, emails, phones, IT Glue dates, link to the location | ITGlue ID field, then name within the company |
 | websites | Website `https://<domain>` with notes | URL within the company |
 
-Layouts the sync creates are activated automatically. If a layout already exists (for example from
-the original script), the sync uses it as-is and only writes the fields it has.
+Layouts the sync creates are activated automatically. If a layout with that name already exists
+(Hudu's own setup or the original script may have created one), the sync reuses it. When it lacks
+fields the sync writes, the stage stops before writing anything and lists them; set
+`Layouts.MissingFields` to `add` to append them to the existing layout. Records synced earlier with
+fewer fields are then filled in place on the next run, because their content fingerprint changes.
 
 ## Files in `data/`
 

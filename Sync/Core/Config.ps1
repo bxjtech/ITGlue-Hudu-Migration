@@ -30,6 +30,7 @@ function Get-SyncConfig {
             Color                  = '#6136ff'
             IconColor              = '#ffffff'
             PrimaryLocationAliases = @('Primary Address')
+            MissingFields          = 'stop'
         }
         Websites                  = [ordered]@{
             DisableMonitoring = $true
@@ -69,6 +70,9 @@ function Get-SyncConfig {
 
     foreach ($k in 'HuduBaseUrl', 'ITGlueApiUrl') {
         $config[$k] = ([string]$config[$k]).Trim().TrimEnd('/')
+    }
+    if ($config.Layouts.MissingFields -notin @('stop', 'add', 'ignore')) {
+        throw "Layouts.MissingFields must be 'stop', 'add' or 'ignore' (got '$($config.Layouts.MissingFields)')."
     }
     if ($config.ConflictPolicy -notin @('itglue-wins', 'hudu-wins')) {
         throw "ConflictPolicy must be 'itglue-wins' or 'hudu-wins' (got '$($config.ConflictPolicy)')."

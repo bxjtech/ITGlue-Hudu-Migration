@@ -16,7 +16,8 @@
     "IconColor": "#ffffff",
     "PrimaryLocationAliases": [
       "Primary Address"
-    ]
+    ],
+    "MissingFields": "stop"
   },
   "Websites": {
     "DisableMonitoring": true

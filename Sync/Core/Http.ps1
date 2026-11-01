@@ -46,7 +46,7 @@ function Invoke-SyncHttp {
         [hashtable]$Headers = @{},
         $Body,
         [string]$ContentType = 'application/json; charset=utf-8',
-        [int]$MaxRetries = 6,
+        [int]$MaxRetries = 10,
         [switch]$AllowNotFound
     )
     $idempotent = $Method -in @('GET', 'PUT', 'DELETE', 'HEAD')
