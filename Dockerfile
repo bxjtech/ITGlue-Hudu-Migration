@@ -33,10 +33,10 @@ COPY tests/ /app/tests/
 RUN pwsh -NoProfile -File /app/tests/run-tests.ps1
 
 FROM base AS runtime
-RUN useradd --create-home --uid 1000 sync \
+RUN useradd --create-home --uid 1000 itgsync \
  && mkdir -p /data /export \
- && chown sync:sync /data
-USER sync
+ && chown itgsync:itgsync /data
+USER itgsync
 ENV SYNC_DATA_DIR=/data
 VOLUME ["/data"]
 ENTRYPOINT ["itg-sync"]
