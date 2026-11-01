@@ -1,4 +1,4 @@
-$core = 'Util', 'Http', 'Clients', 'Config', 'State', 'Stages', 'Engine', 'Report', 'Legacy'
+$core = 'Util', 'Http', 'Clients', 'Config', 'State', 'Stages', 'Engine', 'Records', 'Assets', 'Report', 'Legacy'
 foreach ($c in $core) { . (Join-Path $PSScriptRoot "Core/$c.ps1") }
 
 . (Join-Path $PSScriptRoot 'Stages/Catalog.ps1')

@@ -16,11 +16,23 @@ function Get-SyncConfig {
         DataDir                   = Get-SyncDefaultDataDir
         ConflictPolicy            = 'itglue-wins'
         LockStaleHours            = 12
+        UpdatePreExisting         = $false
+        IncludeITGlueIdField      = $true
         Companies                 = [ordered]@{
-            UpdatePreExisting      = $false
             WriteBackReference     = $false
             MergeOrgTypes          = @()
             MergeTargetHuduCompany = $null
+            Parents                = [ordered]@{}
+        }
+        Layouts                   = [ordered]@{
+            Locations              = 'Locations'
+            Contacts               = 'People'
+            Color                  = '#6136ff'
+            IconColor              = '#ffffff'
+            PrimaryLocationAliases = @('Primary Address')
+        }
+        Websites                  = [ordered]@{
+            DisableMonitoring = $true
         }
     }
 

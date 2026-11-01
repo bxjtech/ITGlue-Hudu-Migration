@@ -53,7 +53,7 @@ function Get-HuduCollection {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$Property,
+        [string]$Property,
         [hashtable]$Query = @{},
         [int]$PageSize = 1000
     )
@@ -63,7 +63,8 @@ function Get-HuduCollection {
         $q.page = $page
         $q.page_size = $PageSize
         $resp = Invoke-HuduApi -Config $Config -Path $Path -Query $q
-        $items = @((Get-SyncProp $resp $Property) | Where-Object { $null -ne $_ })
+        $list = if ($Property) { Get-SyncProp $resp $Property } else { $resp }
+        $items = @($list | Where-Object { $null -ne $_ })
         foreach ($i in $items) { $i }
         if ($items.Count -lt $PageSize) { break }
         $page++

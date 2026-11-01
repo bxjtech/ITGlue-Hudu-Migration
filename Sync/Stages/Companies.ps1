@@ -54,7 +54,7 @@ function Get-SyncCompanyNameAssignments {
 }
 
 function New-SyncCompanyPayload {
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)]$Org, [string]$Name, $PrimaryLocation, $ExportRow)
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)]$Org, [string]$Name, $PrimaryLocation, $ExportRow, $ParentHuduId)
     $a = $Org.attributes
     $quickNotes = ConvertTo-SyncText $a.'quick-notes'
     $alert = ConvertTo-SyncText $a.alert
@@ -80,6 +80,7 @@ function New-SyncCompanyPayload {
         notes          = $notes
     }
     if ($Context.Config.Companies.WriteBackReference) { $payload.id_number = "ITG:$($Org.id)" }
+    if ($ParentHuduId) { $payload.parent_company_id = [long]$ParentHuduId }
     return $payload
 }
 
@@ -114,10 +115,14 @@ function Invoke-SyncCompaniesStage {
         if (-not $mergeTarget) { throw "Merge target Hudu company $($cfg.MergeTargetHuduCompany) was not found." }
     }
 
+    $parents = @{}
+    if ($cfg.Parents) { foreach ($k in $cfg.Parents.Keys) { $parents[[string]$k] = [string]$cfg.Parents[$k] } }
+    $orgIds = [System.Collections.Generic.HashSet[string]]::new([string[]]@($orgs | ForEach-Object { [string]$_.id }))
     $names = Get-SyncCompanyNameAssignments -Organizations $orgs -Map $map
+    $owners = Get-SyncMapHuduIndex $map
     $now = Format-SyncTime (Get-SyncUtcNow)
 
-    foreach ($org in ($orgs | Sort-Object { [long]$_.id })) {
+    foreach ($org in ($orgs | Sort-Object { [int]$parents.ContainsKey([string]$_.id) }, { [long]$_.id })) {
         $itgId = [string]$org.id
         if (-not (Test-SyncInScope $Context $itgId)) { continue }
         $itgName = [string]$org.attributes.name
@@ -125,8 +130,7 @@ function Invoke-SyncCompaniesStage {
         try {
             $rec = Get-SyncMapRecord $map $itgId
             $primary = $primaryByOrg[$itgId]
-            $itgUpdated = @((ConvertTo-SyncUtc $org.attributes.'updated-at'), (ConvertTo-SyncUtc (Get-SyncProp $primary.attributes 'updated-at'))) |
-                Where-Object { $_ } | Sort-Object -Descending | Select-Object -First 1
+            $itgUpdated = Get-SyncLatestTime @($org.attributes.'updated-at', (Get-SyncProp $primary.attributes 'updated-at'))
 
             if ($mergeTarget -and $mergeTypes -contains $org.attributes.'organization-type-name') {
                 if (-not $rec -or [string]$rec.huduId -ne [string]$mergeTarget.id) {
@@ -140,8 +144,20 @@ function Invoke-SyncCompaniesStage {
                 Add-SyncFlag $Context 'duplicate-name' $itgId $null $itgName "IT Glue has several organizations named '$itgName'; this one is named '$name' in Hudu."
             }
 
-            $payload = New-SyncCompanyPayload -Context $Context -Org $org -Name $name -PrimaryLocation $primary -ExportRow $exportRows[$itgId]
+            $parentHuduId = $null
+            if ($parents.ContainsKey($itgId)) {
+                $parentItgId = $parents[$itgId]
+                $parentHuduId = Get-SyncCompanyHuduId $Context $parentItgId
+                if (-not $orgIds.Contains($parentItgId)) {
+                    Add-SyncFlag $Context 'parent-company-missing' $itgId $null $itgName "Companies.Parents points to IT Glue organization $parentItgId, which does not exist."
+                } elseif (-not $parentHuduId) {
+                    Add-SyncFlag $Context 'parent-company-missing' $itgId $null $itgName "Parent organization $parentItgId has not been synced yet; the parent link is set on a later run."
+                }
+            }
+
+            $payload = New-SyncCompanyPayload -Context $Context -Org $org -Name $name -PrimaryLocation $primary -ExportRow $exportRows[$itgId] -ParentHuduId $parentHuduId
             $hash = Get-SyncHash $payload
+            $current = $null
 
             if ($rec) {
                 $current = $huduById[[string]$rec.huduId]
@@ -159,90 +175,47 @@ function Invoke-SyncCompaniesStage {
                 if ($backRef) {
                     $rec = @{ huduId = [string]$backRef.id; itgName = $itgName; huduName = $backRef.name; managed = $true; matchedBy = 'backref'; lastSyncedAt = $null; huduUpdatedAt = $backRef.updated_at }
                     Save-SyncMapping $Context 'companies' $itgId $rec
+                    $owners[[string]$backRef.id] = $itgId
                     Add-SyncResult $Context 'matched' $itgId $itgName $backRef.id 're-linked via ITG back-reference'
                     $current = $backRef
                 } elseif ($byName) {
-                    $owner = Find-SyncMapByHuduId $map $byName.id
+                    $owner = $owners[[string]$byName.id]
                     if ($owner -and $owner -ne $itgId) {
                         Add-SyncFlag $Context 'name-collision' $itgId $byName.id $itgName "Hudu company '$($byName.name)' is already mapped to IT Glue organization $owner."
                         Add-SyncResult $Context 'skipped' $itgId $itgName $byName.id 'name collision'
                         continue
                     }
-                    $managed = [bool]$cfg.UpdatePreExisting
+                    $managed = [bool]$Context.Config.UpdatePreExisting
                     $rec = @{ huduId = [string]$byName.id; itgName = $itgName; huduName = $byName.name; managed = $managed; matchedBy = 'name'; lastSyncedAt = $null; huduUpdatedAt = $byName.updated_at }
                     Save-SyncMapping $Context 'companies' $itgId $rec
+                    $owners[[string]$byName.id] = $itgId
                     Add-SyncResult $Context 'matched' $itgId $itgName $byName.id 'existing Hudu company with the same name'
                     if (-not $managed) { continue }
                     $current = $byName
                 } else {
-                    if ($Context.DryRun) {
-                        Add-SyncResult $Context 'would-create' $itgId $name $null
-                        continue
+                    $created = Invoke-SyncCreateRecord -Context $Context -Entity 'companies' -ItgId $itgId -Name $name -Hash $hash -ItgUpdatedAt $itgUpdated -Extra @{ itgName = $itgName } -Write {
+                        $body = [ordered]@{}
+                        foreach ($k in $payload.Keys) { if ("$($payload[$k])" -ne '') { $body[$k] = $payload[$k] } }
+                        (Invoke-SyncHuduWrite $Context 'POST' '/api/v1/companies' @{ company = $body }).company
+                    }.GetNewClosure()
+                    if ($created) {
+                        $huduById[[string]$created.id] = $created
+                        $huduByName[$name] = $created
+                        $owners[[string]$created.id] = $itgId
                     }
-                    $body = [ordered]@{}
-                    foreach ($k in $payload.Keys) { if ("$($payload[$k])" -ne '') { $body[$k] = $payload[$k] } }
-                    $created = (Invoke-SyncHuduWrite $Context 'POST' '/api/v1/companies' @{ company = $body }).company
-                    if (-not $created.id) { throw 'Hudu did not return the created company.' }
-                    Save-SyncMapping $Context 'companies' $itgId @{
-                        huduId = [string]$created.id; itgName = $itgName; huduName = $name; managed = $true; matchedBy = 'created'
-                        sourceHash = $hash; huduUpdatedAt = $created.updated_at; itgUpdatedAt = Format-SyncTime $itgUpdated; lastSyncedAt = $now
-                    }
-                    $huduById[[string]$created.id] = $created
-                    $huduByName[$name] = $created
-                    Add-SyncResult $Context 'created' $itgId $name $created.id
                     continue
                 }
             }
 
-            $action = Resolve-SyncAction -Context $Context -MapRecord $rec -DesiredHash $hash -ItgUpdatedAt $itgUpdated
-            switch ($action) {
-                'reference' { Add-SyncResult $Context 'reference' $itgId $itgName $rec.huduId 'pre-existing Hudu company (not managed)' }
-                'unchanged' { Add-SyncResult $Context 'unchanged' $itgId $itgName $rec.huduId }
-                'baseline' {
-                    $rec.sourceHash = $hash
-                    $rec.itgUpdatedAt = Format-SyncTime $itgUpdated
-                    $rec.huduUpdatedAt = $current.updated_at
-                    Save-SyncMapping $Context 'companies' $itgId $rec
-                    Add-SyncResult $Context 'baseline' $itgId $itgName $rec.huduId 'unchanged since the earlier migration; recorded as baseline'
-                }
-                'update' {
-                    if (Test-SyncHuduModified -MapRecord $rec -HuduRecord $current) {
-                        if ($Context.Config.ConflictPolicy -eq 'hudu-wins') {
-                            Add-SyncFlag $Context 'hudu-modified' $itgId $rec.huduId $itgName 'Changed in both IT Glue and Hudu since the last sync; kept the Hudu version (ConflictPolicy=hudu-wins).'
-                            Add-SyncResult $Context 'skipped' $itgId $itgName $rec.huduId 'conflict'
-                            break
-                        }
-                        Add-SyncFlag $Context 'hudu-modified' $itgId $rec.huduId $itgName 'Changed in both IT Glue and Hudu since the last sync; IT Glue version applied (ConflictPolicy=itglue-wins).'
-                    }
-                    if ($Context.DryRun) {
-                        Add-SyncResult $Context 'would-update' $itgId $name $rec.huduId
-                        break
-                    }
-                    $updated = (Invoke-SyncHuduWrite $Context 'PUT' "/api/v1/companies/$($rec.huduId)" @{ company = $payload }).company
-                    $rec.sourceHash = $hash
-                    $rec.huduName = $name
-                    $rec.itgName = $itgName
-                    $rec.huduUpdatedAt = if ($updated) { $updated.updated_at } else { $null }
-                    $rec.itgUpdatedAt = Format-SyncTime $itgUpdated
-                    $rec.lastSyncedAt = $now
-                    Save-SyncMapping $Context 'companies' $itgId $rec
-                    Add-SyncResult $Context 'updated' $itgId $name $rec.huduId
-                }
-            }
+            Invoke-SyncExistingRecord -Context $Context -Entity 'companies' -ItgId $itgId -Name $name -Record $rec -Hash $hash -ItgUpdatedAt $itgUpdated -Current $current -Extra @{ itgName = $itgName } -Write {
+                (Invoke-SyncHuduWrite $Context 'PUT' "/api/v1/companies/$($rec.huduId)" @{ company = $payload }).company
+            }.GetNewClosure()
         } catch {
             Add-SyncResult $Context 'error' $itgId $itgName $null "$($_.Exception.Message)"
         }
     }
 
-    if ($null -eq $Context.Scope) {
-        $present = [System.Collections.Generic.HashSet[string]]::new([string[]]@($orgs | ForEach-Object { [string]$_.id }))
-        foreach ($k in @($map.Records.Keys)) {
-            if (-not $present.Contains($k)) {
-                $r = $map.Records[$k]
-                Add-SyncFlag $Context 'deleted-in-itglue' $k $r.huduId $r.itgName 'Organization no longer exists in IT Glue; Hudu company left alone.'
-            }
-        }
-    }
+    Add-SyncDeletedFlags -Context $Context -Map $map -Items $orgs -What 'organization'
 }
 
 Set-SyncStageRunner -Name 'companies' -Run { param($ctx) Invoke-SyncCompaniesStage $ctx }

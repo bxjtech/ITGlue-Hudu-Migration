@@ -71,14 +71,6 @@ function Save-SyncMap {
     $Map.Dirty = $false
 }
 
-function Find-SyncMapByHuduId {
-    param([Parameter(Mandatory)]$Map, [Parameter(Mandatory)]$HuduId)
-    foreach ($k in $Map.Records.Keys) {
-        if ([string]$Map.Records[$k].huduId -eq [string]$HuduId) { return $k }
-    }
-    return $null
-}
-
 function Get-SyncStageState {
     param([Parameter(Mandatory)]$Config)
     $state = Read-SyncJson (Join-Path (Get-SyncStateDir $Config) 'stages.json')

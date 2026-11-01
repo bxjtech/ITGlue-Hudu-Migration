@@ -17,6 +17,11 @@ function Reset-FakeApis {
         Orgs      = [System.Collections.Generic.List[object]]::new()
         Locations = [System.Collections.Generic.List[object]]::new()
         Companies = [System.Collections.Generic.List[object]]::new()
+        Contacts  = [System.Collections.Generic.List[object]]::new()
+        Domains   = [System.Collections.Generic.List[object]]::new()
+        Layouts   = [System.Collections.Generic.List[object]]::new()
+        Assets    = [System.Collections.Generic.List[object]]::new()
+        Websites  = [System.Collections.Generic.List[object]]::new()
         NextId    = 100
         Calls     = [System.Collections.Generic.List[object]]::new()
         FailNext  = @()
@@ -66,6 +71,67 @@ function Add-FakeHuduCompany {
     return $c
 }
 
+function Add-FakeContact {
+    param([string]$Id, [string]$OrgId, [string]$First, [string]$Last, [string]$LocationId, [string]$Email = '')
+    $emails = if ($Email) { @(@{ value = $Email; primary = $true; 'label-name' = 'Work' }) } else { @() }
+    $global:Fake.Contacts.Add(@{
+        id = $Id; type = 'contacts'
+        attributes = @{ name = "$First $Last"; 'first-name' = $First; 'last-name' = $Last; title = ''; 'contact-type-name' = 'Employee'; important = $false
+            notes = ''; 'contact-emails' = $emails; 'contact-phones' = @(); 'location-id' = $(if ($LocationId) { [int]$LocationId } else { $null })
+            'organization-id' = [int]$OrgId; 'created-at' = (Get-FakeNowText); 'updated-at' = (Get-FakeNowText) }
+    })
+}
+
+function Set-FakeItgRecord {
+    param([string]$Kind, [string]$Id, [hashtable]$Attributes)
+    $r = $global:Fake[$Kind] | Where-Object { $_.id -eq $Id }
+    foreach ($k in $Attributes.Keys) { $r.attributes[$k] = $Attributes[$k] }
+    $r.attributes['updated-at'] = Get-FakeNowText
+}
+
+function Add-FakeDomain {
+    param([string]$Id, [string]$OrgId, [string]$Name, [string]$Notes = '')
+    $global:Fake.Domains.Add(@{ id = $Id; type = 'domains'; attributes = @{ name = $Name; notes = $Notes; 'organization-id' = [int]$OrgId; 'updated-at' = (Get-FakeNowText) } })
+}
+
+function Add-FakeLayout {
+    param([string]$Name, [string[]]$Labels)
+    $l = @{ id = $global:Fake.NextId++; name = $Name; active = $true; fields = @($Labels | ForEach-Object { @{ label = $_; field_type = 'Text' } }) }
+    $global:Fake.Layouts.Add($l)
+    return $l
+}
+
+function Add-FakeAsset {
+    param($LayoutId, $CompanyId, [string]$Name, [hashtable]$Fields = @{})
+    $a = @{ id = $global:Fake.NextId++; name = $Name; company_id = [long]$CompanyId; asset_layout_id = [long]$LayoutId; archived = $false
+        fields = @($Fields.Keys | ForEach-Object { @{ label = $_; value = $Fields[$_] } }); updated_at = (Get-FakeNowText) }
+    $global:Fake.Assets.Add($a)
+    return $a
+}
+
+function Get-FakeAssetField { param($Asset, [string]$Label) ($Asset.fields | Where-Object { $_.label -eq $Label }).value }
+
+function Set-FakeAssetFields {
+    param($Asset, $CustomFields)
+    $layout = $global:Fake.Layouts | Where-Object { $_.id -eq $Asset.asset_layout_id }
+    foreach ($cf in @($CustomFields)) {
+        foreach ($key in $cf.Keys) {
+            $label = ($layout.fields | Where-Object { ($_.label.ToLowerInvariant() -replace '\s+', '_') -eq $key }).label
+            if (-not $label) { throw (New-FakeHttpError 422) }
+            $existing = $Asset.fields | Where-Object { $_.label -eq $label }
+            if ($existing) { $existing.value = $cf[$key] } else { $Asset.fields += @{ label = $label; value = $cf[$key] } }
+        }
+    }
+}
+
+function Get-FakeBody { param($Body) $Body | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable }
+
+function Get-FakePage {
+    param($Items, $Query)
+    $size = [int]($Query.page_size ?? 25); $page = [int]($Query.page ?? 1)
+    return @($Items | Select-Object -Skip (($page - 1) * $size) -First $size)
+}
+
 function Get-FakeHuduCompany { param($Id) $global:Fake.Companies | Where-Object { [string]$_.id -eq [string]$Id } }
 
 function Get-FakeCalls { param([string]$Method, [string]$Like = '*') @($global:Fake.Calls | Where-Object { $_.Method -eq $Method -and $_.Path -like $Like }) }
@@ -111,6 +177,8 @@ $global:FakeTransport = {
         switch ($path) {
             '/organizations' { return ConvertTo-FakeResponse (Invoke-FakeItgPage $global:Fake.Orgs $query) }
             '/locations' { return ConvertTo-FakeResponse (Invoke-FakeItgPage $global:Fake.Locations $query) }
+            '/contacts' { return ConvertTo-FakeResponse (Invoke-FakeItgPage $global:Fake.Contacts $query) }
+            '/domains' { return ConvertTo-FakeResponse (Invoke-FakeItgPage $global:Fake.Domains $query) }
         }
         throw (New-FakeHttpError 404)
     }
@@ -144,18 +212,70 @@ $global:FakeTransport = {
             return ConvertTo-FakeResponse @{ company = $c }
         }
     }
+    if ($path -eq '/api/v1/asset_layouts' -and $Method -eq 'GET') {
+        $items = @($global:Fake.Layouts | Where-Object { -not $query.name -or $_.name -eq $query.name })
+        return ConvertTo-FakeResponse @{ asset_layouts = @(Get-FakePage $items $query) }
+    }
+    if ($path -eq '/api/v1/asset_layouts' -and $Method -eq 'POST') {
+        $data = (Get-FakeBody $Body).asset_layout
+        $l = @{ id = $global:Fake.NextId++; name = $data.name; active = $false; fields = @($data.fields); icon = $data.icon }
+        $global:Fake.Layouts.Add($l)
+        return ConvertTo-FakeResponse @{ asset_layout = $l }
+    }
+    if ($path -match '^/api/v1/asset_layouts/(\d+)$' -and $Method -eq 'PUT') {
+        $l = $global:Fake.Layouts | Where-Object { [string]$_.id -eq $Matches[1] }
+        $data = (Get-FakeBody $Body).asset_layout
+        foreach ($k in $data.Keys) { $l[$k] = $data[$k] }
+        return ConvertTo-FakeResponse @{ asset_layout = $l }
+    }
+    if ($path -eq '/api/v1/assets' -and $Method -eq 'GET') {
+        $wantArchived = $query.archived -eq 'true'
+        $items = @($global:Fake.Assets | Where-Object { [string]$_.asset_layout_id -eq $query.asset_layout_id -and [bool]$_.archived -eq $wantArchived })
+        return ConvertTo-FakeResponse @{ assets = @(Get-FakePage $items $query) }
+    }
+    if ($path -match '^/api/v1/companies/(\d+)/assets$' -and $Method -eq 'POST') {
+        $cid = $Matches[1]
+        if (-not (Get-FakeHuduCompany $cid)) { throw (New-FakeHttpError 404) }
+        $data = (Get-FakeBody $Body).asset
+        $a = Add-FakeAsset -LayoutId $data.asset_layout_id -CompanyId $cid -Name $data.name
+        Set-FakeAssetFields $a $data.custom_fields
+        return ConvertTo-FakeResponse @{ asset = $a }
+    }
+    if ($path -match '^/api/v1/companies/(\d+)/assets/(\d+)$' -and $Method -eq 'PUT') {
+        $a = $global:Fake.Assets | Where-Object { [string]$_.id -eq $Matches[2] -and [string]$_.company_id -eq $Matches[1] }
+        if (-not $a) { throw (New-FakeHttpError 404) }
+        $data = (Get-FakeBody $Body).asset
+        if ($data.name) { $a.name = $data.name }
+        Set-FakeAssetFields $a $data.custom_fields
+        $a.updated_at = Get-FakeNowText
+        return ConvertTo-FakeResponse @{ asset = $a }
+    }
+    if ($path -eq '/api/v1/websites' -and $Method -eq 'GET') { return ConvertTo-FakeResponse @(Get-FakePage $global:Fake.Websites $query) }
+    if ($path -eq '/api/v1/websites' -and $Method -eq 'POST') {
+        $data = (Get-FakeBody $Body).website
+        $w = @{ id = $global:Fake.NextId++; updated_at = (Get-FakeNowText) }
+        foreach ($k in $data.Keys) { $w[$k] = $data[$k] }
+        $global:Fake.Websites.Add($w)
+        return ConvertTo-FakeResponse $w
+    }
+    if ($path -match '^/api/v1/websites/(\d+)$' -and $Method -eq 'PUT') {
+        $w = $global:Fake.Websites | Where-Object { [string]$_.id -eq $Matches[1] }
+        if (-not $w) { throw (New-FakeHttpError 404) }
+        $data = (Get-FakeBody $Body).website
+        foreach ($k in $data.Keys) { $w[$k] = $data[$k] }
+        $w.updated_at = Get-FakeNowText
+        return ConvertTo-FakeResponse $w
+    }
     throw (New-FakeHttpError 404)
 }
 
 function New-FakeConfig {
-    param([string]$DataDir, [hashtable]$Companies = @{}, [string]$ConflictPolicy = 'itglue-wins', [string]$ExportPath = '')
-    $cfg = [ordered]@{
-        HuduBaseUrl = $script:HuduBase; HuduApiKey = 'hudu-key'
-        ITGlueApiUrl = $script:ItgBase; ITGlueApiKey = 'itg-key'
-        ITGlueExportPath = $ExportPath; DataDir = $DataDir
-        ConflictPolicy = $ConflictPolicy; LockStaleHours = 12
-        Companies = [ordered]@{ UpdatePreExisting = $false; WriteBackReference = $false; MergeOrgTypes = @(); MergeTargetHuduCompany = $null }
-    }
+    param([string]$DataDir, [hashtable]$Companies = @{}, [string]$ConflictPolicy = 'itglue-wins', [string]$ExportPath = '', [hashtable]$Settings = @{})
+    $cfg = Get-SyncConfig
+    $cfg.HuduBaseUrl = $script:HuduBase; $cfg.HuduApiKey = 'hudu-key'
+    $cfg.ITGlueApiUrl = $script:ItgBase; $cfg.ITGlueApiKey = 'itg-key'
+    $cfg.ITGlueExportPath = $ExportPath; $cfg.DataDir = $DataDir; $cfg.ConflictPolicy = $ConflictPolicy
     foreach ($k in $Companies.Keys) { $cfg.Companies[$k] = $Companies[$k] }
+    foreach ($k in $Settings.Keys) { $cfg[$k] = $Settings[$k] }
     return $cfg
 }

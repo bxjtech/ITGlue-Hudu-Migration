@@ -24,4 +24,5 @@ for i in "${!args[@]}"; do
     fi
 done
 
+export POWERSHELL_TELEMETRY_OPTOUT=1
 exec pwsh -NoProfile -NonInteractive -File "$here/Sync/sync.ps1" "${args[@]}"

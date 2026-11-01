@@ -31,5 +31,5 @@ Test 'plan: recipes expand, comma lists split, unknown names and planned stages 
     Assert-Equal 'companies,locations,contacts,websites' ($plan -join ',')
     Assert-Equal 'companies' ((Resolve-SyncPlan -Requested @('companies, companies')) -join ',')
     Assert-Throws { Resolve-SyncPlan -Requested @('nope') } -Like "*Unknown stage*"
-    Assert-Throws { Resolve-SyncPlan -Requested @('core') } -Like "*Not implemented yet*"
+    Assert-Throws { Resolve-SyncPlan -Requested @('assets') -StageState @{ companies = @{ lastSuccessAt = 'x' } } } -Like "*Not implemented yet*"
 }

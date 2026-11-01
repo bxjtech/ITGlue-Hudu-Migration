@@ -105,7 +105,7 @@ Test 'pre-existing Hudu company with the same name is matched, not duplicated or
 Test 'UpdatePreExisting lets the sync manage name-matched companies' { param($dir)
     New-StandardOrgs
     Add-FakeHuduCompany -Name 'Globex' -Fields @{ notes = 'from PSA' } | Out-Null
-    $cfg = New-FakeConfig $dir -Companies @{ UpdatePreExisting = $true }
+    $cfg = New-FakeConfig $dir -Settings @{ UpdatePreExisting = $true }
     Invoke-CompaniesRun $cfg 'incremental' | Out-Null
     Assert-Equal "<div class='callout callout-warning'>VIP</div>" ($global:Fake.Companies | Where-Object name -eq 'Globex').notes
 }
@@ -314,4 +314,30 @@ Test 'reports are written as JSON and Markdown' { param($dir)
     $json = Get-Content $r.JsonPath -Raw | ConvertFrom-Json
     Assert-Equal 'initial' $json.mode
     Assert-Equal 3 $json.stages[0].counts.created
+}
+
+Test 'configured parent companies are linked, even when the parent has a higher IT Glue ID' { param($dir)
+    Add-FakeOrg -Id '5' -Name 'Alpha Heating & Air (Medford)'
+    Add-FakeOrg -Id '9' -Name 'Alpha Heating and Air'
+    Add-FakeOrg -Id '12' -Name 'Unrelated'
+    $cfg = New-FakeConfig $dir -Companies @{ Parents = @{ '5' = '9'; '12' = '999' } }
+    $r = Invoke-CompaniesRun $cfg 'initial'
+    $parent = $global:Fake.Companies | Where-Object name -eq 'Alpha Heating and Air'
+    $child = $global:Fake.Companies | Where-Object name -eq 'Alpha Heating & Air (Medford)'
+    Assert-Equal $parent.id $child.parent_company_id
+    Assert-Equal 'parent-company-missing' (@($r.Flags | Where-Object itgId -eq '12'))[0].type
+    Invoke-CompaniesRun $cfg 'incremental' | Out-Null
+    Assert-Equal 0 (Get-FakeCalls PUT).Count 'parent link is stable across runs'
+}
+
+Test 'adding a parent mapping later updates only the child' { param($dir)
+    Add-FakeOrg -Id '5' -Name 'Child Co'
+    Add-FakeOrg -Id '9' -Name 'Parent Co'
+    $cfg = New-FakeConfig $dir
+    Invoke-CompaniesRun $cfg 'initial' | Out-Null
+    $cfg.Companies.Parents = @{ '5' = '9' }
+    Invoke-CompaniesRun $cfg 'incremental' | Out-Null
+    $puts = Get-FakeCalls PUT
+    Assert-Equal 1 $puts.Count
+    Assert-Equal (($global:Fake.Companies | Where-Object name -eq 'Parent Co').id) (($global:Fake.Companies | Where-Object name -eq 'Child Co').parent_company_id)
 }
