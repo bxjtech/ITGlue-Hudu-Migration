@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Runs the sync CLI. Accepts PowerShell-style (-Stage x) or GNU-style (--stage x, --dry-run) options.
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)"
+
+if ! command -v pwsh >/dev/null 2>&1; then
+    echo "PowerShell 7 (pwsh) is required. On macOS: brew install powershell" >&2
+    exit 127
+fi
+
+args=()
+for a in "$@"; do
+    case "$a" in
+        -h|--help) args+=("help") ;;
+        --*=*) key="${a%%=*}"; args+=("-${key#--}" "${a#*=}") ;;
+        --*) args+=("-${a#--}") ;;
+        *) args+=("$a") ;;
+    esac
+done
+for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == -* && "${args[$i]}" != "-" ]]; then
+        args[$i]="-$(printf '%s' "${args[$i]#-}" | tr -d '-')"
+    fi
+done
+
+exec pwsh -NoProfile -NonInteractive -File "$here/Sync/sync.ps1" "${args[@]}"

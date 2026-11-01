@@ -1,0 +1,10 @@
+{
+  "ConflictPolicy": "itglue-wins",
+  "LockStaleHours": 12,
+  "Companies": {
+    "UpdatePreExisting": false,
+    "WriteBackReference": false,
+    "MergeOrgTypes": [],
+    "MergeTargetHuduCompany": null
+  }
+}

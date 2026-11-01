@@ -1,0 +1,17 @@
+.git
+.github
+.env
+data
+export
+release
+debug*
+*.exe
+*.dll
+*.zip
+*.md
+Private
+Public
+Remove
+*.ps1
+!Sync/**
+!tests/**

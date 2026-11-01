@@ -1,0 +1,13 @@
+services:
+  sync:
+    build:
+      context: .
+      target: runtime
+    image: itg-hudu-sync:local
+    env_file: .env
+    environment:
+      SYNC_DATA_DIR: /data
+      ITGLUE_EXPORT_PATH: /export
+    volumes:
+      - ./data:/data
+      - ${ITGLUE_EXPORT_HOST_PATH:-./export}:/export:ro
