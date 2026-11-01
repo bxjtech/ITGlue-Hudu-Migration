@@ -26,6 +26,13 @@ You'll want to make sure your Hudu instance is prepared for migration and that t
 - **Settings:** Stored by default under `%APPDATA%\HuduMigration`, same as the PowerShell workflow.
 - **Use PowerShell instead** if you rely on a customized **`environ.example`**, want full session control over variables, or need to manually invoke post-run scripts such as **`Get-MissingRelations.ps1`**, **`Move-AssetsToNewLayout.ps1`**, **`Add-HuduAttachmentsViaAPI.ps1`**, or **`Replace-HuduBase64Images.ps1`** -note, these are ran as part of the main script and are always ran, so you likely wont need to consider post-run scripts.
 
+## macOS / Linux / Docker: sync engine (in progress)
+
+A separate cross-platform sync engine supports a one-time initial sync, repeated incremental syncs
+without duplicates, a final cutover pass, per-stage runs and per-company scoping. It runs from a Mac
+terminal or Docker (including OrbStack). See **[docs/SYNC.md](docs/SYNC.md)**. Stages are being
+ported one at a time; companies is available now.
+
 ## What the script does migrate:
 - Companies
 - Contacts
