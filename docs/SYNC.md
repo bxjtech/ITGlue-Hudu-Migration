@@ -4,8 +4,9 @@ A cross-platform (macOS, Linux, Docker) sync tool that runs alongside the origin
 It lets you seed Hudu once, keep it updated with repeated incremental runs while IT Glue is still in
 use, and finish with a cutover pass. It never creates duplicates on re-runs.
 
-> Status: the engine, CLI, state handling and the **companies** stage are done. The other stages are
-> listed in the catalog as `planned` and are being added one at a time on the same pattern.
+> Status: the engine, CLI and state handling are done, along with the `core` stages: **companies**,
+> **locations**, **contacts** and **websites**. The other stages are listed in the catalog as
+> `planned` and are being added one at a time on the same pattern.
 
 ## Quick start on a Mac (OrbStack or Docker Desktop)
 
@@ -130,9 +131,10 @@ urlrewrite · `all` = every stage.
 2. **Change detection.** Each mapping stores a fingerprint of the data last sent to Hudu. A record is
    only updated when the IT Glue side produces a different fingerprint, so re-runs with no IT Glue
    changes make zero writes, and later Hudu-side edits (for example rewritten links) are not clobbered.
-3. **Name fallback.** If the map is lost, records are matched to existing Hudu records by name
-   instead of being created again. Companies can also carry a back-reference (`ITG:<id>` in Hudu's
-   ID Number field, `Companies.WriteBackReference`), which lets them re-link even after a rename.
+3. **Name fallback and back-references.** If the map is lost, records are matched to existing Hudu
+   records by name (within the same company) instead of being created again. Locations and contacts
+   also carry an **ITGlue ID** field, so they re-link even after a rename. Companies can carry one
+   too (`ITG:<id>` in Hudu's ID Number field, `Companies.WriteBackReference`).
 4. **No blind retries on create.** Reads and updates are retried on rate limits and server errors;
    creates are retried only on rate limits, because retrying a create that may have succeeded could
    duplicate it.
@@ -147,6 +149,9 @@ urlrewrite · `all` = every stage.
 | `hudu-modified` | Changed on both sides since the last sync; resolved per `ConflictPolicy` |
 | `name-collision` | The Hudu name is already mapped to a different IT Glue record |
 | `duplicate-name` | IT Glue has several records with this name; the Hudu copy got a `-N` suffix |
+| `parent-not-synced` | The record's IT Glue organization has no Hudu company yet; skipped until it does |
+| `moved-company` | The record moved to another organization in IT Glue; the Hudu record stays where it is |
+| `parent-company-missing` | A `Companies.Parents` entry points at an organization that doesn't exist or hasn't synced |
 
 Flags are kept in `data/state/flags.json`, listed by `flags`, and included in every run report.
 A flag disappears once a full (unscoped) run of that stage no longer finds the condition.
@@ -198,10 +203,41 @@ Secrets come from environment variables (`.env` with Docker). Non-secret options
 |---|---|---|
 | `ConflictPolicy` | `itglue-wins` | When both sides changed: `itglue-wins` applies IT Glue and flags; `hudu-wins` keeps Hudu and flags |
 | `LockStaleHours` | `12` | A lock older than this is treated as abandoned |
-| `Companies.UpdatePreExisting` | `false` | Also update Hudu companies that existed before the sync (matched by name) |
+| `UpdatePreExisting` | `false` | Also update Hudu records that existed before the sync (matched by name), in every stage |
+| `IncludeITGlueIdField` | `true` | Add an **ITGlue ID** field to layouts the sync creates (used to re-link records) |
 | `Companies.WriteBackReference` | `false` | Write `ITG:<id>` to the company's ID Number field (leave off if your PSA uses it) |
 | `Companies.MergeOrgTypes` | `[]` | IT Glue organization types to fold into one Hudu company, e.g. `["Vendor"]` |
 | `Companies.MergeTargetHuduCompany` | `null` | Hudu company ID that merged types map to |
+| `Companies.Parents` | `{}` | Parent links, child → parent by IT Glue organization ID, e.g. `{"8259601": "7381433"}` |
+| `Layouts.Locations` / `Layouts.Contacts` | `Locations` / `People` | Asset layout names; an existing layout with that name is reused, never modified |
+| `Layouts.Color` / `Layouts.IconColor` | `#6136ff` / `#ffffff` | Colors for layouts the sync creates |
+| `Layouts.PrimaryLocationAliases` | `["Primary Address"]` | Existing Hudu location names an IT Glue primary location may match |
+| `Websites.DisableMonitoring` | `true` | Create websites with monitoring, DNS, SSL and WHOIS checks paused (change them in Hudu later) |
+
+### Parent companies
+
+IT Glue has no parent/child link that the sync can read, so sub-companies sync as separate Hudu
+companies. To link them in Hudu, list each child's IT Glue organization ID with its parent's
+(the IDs are in the IT Glue URL, or in `data/state/map-companies.json`):
+
+```json
+{ "Companies": { "Parents": { "8259601": "7381433", "8259602": "7381433" } } }
+```
+
+The next `incremental` run sets the parent on just those children. Parents sync before their
+children in the same run, so this also works on a first sync.
+
+### What each core stage writes
+
+| Stage | Hudu target | Matched by (when no mapping exists) |
+|---|---|---|
+| companies | Company: name, nickname, type, address and phone from the primary location, alert + quick notes, optional parent | ID Number back-reference, then name |
+| locations | Asset in the **Locations** layout: address fields, phone, fax, notes, IT Glue dates | ITGlue ID field, then name within the company (primary location also matches `Primary Address`) |
+| contacts | Asset in the **People** layout: names, title, type, important, notes, emails, phones, IT Glue dates, link to the location | ITGlue ID field, then name within the company |
+| websites | Website `https://<domain>` with notes | URL within the company |
+
+Layouts the sync creates are activated automatically. If a layout already exists (for example from
+the original script), the sync uses it as-is and only writes the fields it has.
 
 ## Files in `data/`
 

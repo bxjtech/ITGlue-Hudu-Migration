@@ -31,7 +31,7 @@ You'll want to make sure your Hudu instance is prepared for migration and that t
 A separate cross-platform sync engine supports a one-time initial sync, repeated incremental syncs
 without duplicates, a final cutover pass, per-stage runs and per-company scoping. It runs from a Mac
 terminal or Docker (including OrbStack). See **[docs/SYNC.md](docs/SYNC.md)**. Stages are being
-ported one at a time; companies is available now.
+ported one at a time; companies, locations, contacts and websites are available now.
 
 ## What the script does migrate:
 - Companies

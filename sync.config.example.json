@@ -1,10 +1,24 @@
 {
   "ConflictPolicy": "itglue-wins",
   "LockStaleHours": 12,
+  "UpdatePreExisting": false,
+  "IncludeITGlueIdField": true,
   "Companies": {
-    "UpdatePreExisting": false,
     "WriteBackReference": false,
     "MergeOrgTypes": [],
-    "MergeTargetHuduCompany": null
+    "MergeTargetHuduCompany": null,
+    "Parents": {}
+  },
+  "Layouts": {
+    "Locations": "Locations",
+    "Contacts": "People",
+    "Color": "#6136ff",
+    "IconColor": "#ffffff",
+    "PrimaryLocationAliases": [
+      "Primary Address"
+    ]
+  },
+  "Websites": {
+    "DisableMonitoring": true
   }
 }
